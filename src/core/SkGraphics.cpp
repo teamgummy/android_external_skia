@@ -14,6 +14,10 @@
 ** See the License for the specific language governing permissions and 
 ** limitations under the License.
 */
+#ifdef BLTSVILLE_ENHANCEMENT
+#include <dlfcn.h>
+#include <bltsville.h>
+#endif
 
 #include "SkGraphics.h"
 
@@ -47,8 +51,36 @@
     extern void SkRadialGradient_BuildTable();
 #endif
 
+#ifdef BLTSVILLE_ENHANCEMENT
+void *hbvlib = NULL;
+BVFN_MAP bv_map = NULL;
+BVFN_BLT bv_blt = NULL;
+BVFN_UNMAP bv_unmap = NULL;
+#endif
+
 void SkGraphics::Init() {
     SkGlobals::Init();
+
+#ifdef BLTSVILLE_ENHANCEMENT
+    if (hbvlib == NULL) {
+        hbvlib = dlopen("libbltsville_cpu.so", RTLD_LOCAL | RTLD_LAZY);
+        if (hbvlib) {
+            SkDebugf("SkGraphics::Init() - BLTsville (CPU) dlopen success");
+            bv_map = (BVFN_MAP)dlsym(hbvlib, "bv_map");
+            bv_blt = (BVFN_BLT)dlsym(hbvlib, "bv_blt");
+            bv_unmap = (BVFN_UNMAP)dlsym(hbvlib, "bv_unmap");
+            if (!bv_map || !bv_blt || !bv_unmap) {
+                SkDebugf("SkGraphics::Init() - dlsym() imports failed!");
+                dlclose(hbvlib);
+                hbvlib = NULL;
+            }
+        }
+
+        if (!hbvlib) {
+            SkDebugf("SkGraphics::Init() - BLTsville (CPU) dlopen() or dlsym() failed - %s", dlerror());
+        }
+    }
+#endif
 
 #ifdef BUILD_EMBOSS_TABLE
     SkEmbossMask_BuildTable();
@@ -100,10 +132,11 @@ void SkGraphics::Init() {
     {
         char    test = 0xFF;
         int     itest = test;   // promote to int, see if it sign-extended
-        if (itest < 0)
+        if (itest < 0) {
             SkDebugf("SkGraphics: char is signed\n");
-        else
+        } else {
             SkDebugf("SkGraphics: char is unsigned\n");
+        }
     }
     for (i = 0; i < (int)SK_ARRAY_COUNT(gTypeSize); i++) {
         SkDebugf("SkGraphics: sizeof(%s) = %d\n",
@@ -118,6 +151,17 @@ void SkGraphics::Init() {
 #include "SkGlyphCache.h"
 
 void SkGraphics::Term() {
+#ifdef BLTSVILLE_ENHANCEMENT
+    if (hbvlib) {
+        SkDebugf("SkGraphics::Term() dlclose() BLTsville (CPU) ");
+        dlclose(hbvlib);
+        hbvlib = NULL;
+        bv_map = NULL;
+        bv_blt = NULL;
+        bv_unmap = NULL;
+    }
+#endif
+
     SkGraphics::SetFontCacheUsed(0);
     SkGlobals::Term();
 }

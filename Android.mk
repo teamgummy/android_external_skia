@@ -250,6 +250,14 @@ LOCAL_C_INCLUDES += \
 	frameworks/opt/emoji \
 	external/expat/lib
 
+
+ifeq ($(BLTSVILLE_ENHANCEMENT),true)
+LOCAL_CFLAGS += -DBLTSVILLE_ENHANCEMENT
+LOCAL_C_INCLUDES += external/bltsville/bltsville/include \
+                    external/bltsville/ocd/include
+LOCAL_SHARED_LIBRARIES += libdl
+endif
+
 ifeq ($(NO_FALLBACK_FONT),true)
 	LOCAL_CFLAGS += -DNO_FALLBACK_FONT
 endif

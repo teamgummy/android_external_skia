@@ -23,6 +23,14 @@
 #include "SkUtils.h"
 #include "SkXfermode.h"
 
+#ifdef BLTSVILLE_ENHANCEMENT
+#include <bltsville.h>
+extern void* hbvlib;
+extern BVFN_MAP bv_map;
+extern BVFN_BLT bv_blt;
+extern BVFN_UNMAP bv_unmap;
+#endif
+
 ///////////////////////////////////////////////////////////////////////////////
 
 class Sprite_D32_S32 : public SkSpriteBlitter {
@@ -44,6 +52,192 @@ public:
 
     virtual void blitRect(int x, int y, int width, int height) {
         SkASSERT(width > 0 && height > 0);
+#ifdef BLTSVILLE_ENHANCEMENT
+        enum bverror bverr = BVERR_UNK;
+
+        if (hbvlib && (width > 1) && (height > 1)) {
+            struct bvbltparams params;
+            struct bvbuffdesc srcdesc, dstdesc;
+            struct bvsurfgeom srcgeom, dstgeom;
+
+            memset(&params, 0, sizeof(params));
+            params.structsize = sizeof(params);
+
+            params.src1.desc = &srcdesc;
+            params.src1geom = &srcgeom;
+
+            params.src2.desc = &dstdesc;
+            params.src2geom = &dstgeom;
+
+            params.dstdesc = &dstdesc;
+            params.dstgeom = &dstgeom;
+
+            memset(&srcgeom, 0, sizeof(srcgeom));
+            srcgeom.structsize = sizeof(srcgeom);
+
+            memset(&srcdesc, 0, sizeof(srcdesc));
+            srcdesc.structsize = sizeof(srcdesc);
+
+            memset(&dstgeom, 0, sizeof(dstgeom));
+            dstgeom.structsize = sizeof(dstgeom);
+
+            memset(&dstdesc, 0, sizeof(dstdesc));
+            dstdesc.structsize = sizeof(dstdesc);
+
+            params.src1rect.left = x - fLeft;
+            params.src1rect.top = y - fTop;
+            params.src1rect.width = width;
+            params.src1rect.height = height;
+
+            params.src2rect.left = x;
+            params.src2rect.top = y;
+            params.src2rect.width = width;
+            params.src2rect.height = height;
+
+            params.dstrect.left = x;
+            params.dstrect.top = y;
+            params.dstrect.width = width;
+            params.dstrect.height = height;
+
+            dstgeom.width = fDevice->width();
+            dstgeom.height = fDevice->height();
+            dstgeom.virtstride = fDevice->rowBytes();
+
+            srcgeom.width = fSource->width();
+            srcgeom.height = fSource->height();
+            srcgeom.virtstride = fSource->rowBytes();
+
+            srcdesc.virtaddr = fSource->getPixels();
+            srcdesc.length = srcgeom.virtstride * srcgeom.height;
+            dstdesc.virtaddr = fDevice->getPixels();
+            dstdesc.length = dstgeom.virtstride * dstgeom.height;
+
+            if(srcdesc.virtaddr == 0 || dstdesc.virtaddr == 0) {
+                goto SKIA;
+            }
+
+            SkXfermode* xfer = fPaint->getXfermode();
+            int alpha = fPaint->getAlpha();
+            int operation = 0;
+
+            SkXfermode::Mode mode;
+            bool getMode = SkXfermode::IsMode(xfer, &mode);
+
+            if (SkXfermode::kSrcOver_Mode == mode) {
+                if (0 == alpha) {
+                    mode = SkXfermode::kDst_Mode;
+                } else if (0xFF == alpha && fSource->isOpaque()) {
+                    mode = SkXfermode::kSrc_Mode;
+                }
+            }
+
+            switch(mode) {
+
+                case SkXfermode::kSrc_Mode:
+                    srcgeom.format = OCDFMT_RGBA24;
+                    dstgeom.format = OCDFMT_RGBA24;
+
+                    if(fAlpha != 255) {
+                        params.flags = BVFLAG_BLEND;
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1 + BVBLENDDEF_GLOBAL_UCHAR);
+                        params.globalalpha.size8 = alpha;
+                    } else {
+                        params.flags = BVFLAG_ROP;
+                        params.op.rop = 0xCCCC;
+                    }
+
+                    break;
+
+                case SkXfermode::kSrcOver_Mode:
+
+                    params.flags = BVFLAG_BLEND;
+
+                    if(alpha == 255 && fSource->isOpaque()) {
+                        operation = 1; //ROP 0xCCCC -dst RGB1|src RGBx
+                    } else if(alpha == 255 && fDevice->isOpaque()) {
+                        operation = 2; //BLEND -dst RGB1|src RGBA
+                    } else if(alpha == 255) {
+                        operation = 3; //BLEND -dst RGBA|src RGBA
+                    } else if(fSource->isOpaque() && fDevice->isOpaque()) {
+                        operation = 4; //BLEND -dst RGB1|src RGBx  + global alpha
+                    } else if(fSource->isOpaque()) {
+                        operation = 5; //BLEND -dst RGBA|src RGBx  + global alpha
+                    } else if(fDevice->isOpaque()) {
+                        operation = 6; //BLEND -dst RGB1|src RGBA  + global alpha
+                    } else {
+                        operation = 7; //BLEND -dst RGBA|src RGBA  + global alpha
+                    }
+
+                    switch(operation) {
+
+                    case 1://ROP 0xCCCC -dst RGB1|src RGBx
+
+                        if(alpha != 255) {
+                            params.flags = BVFLAG_BLEND;
+                            params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1 + BVBLENDDEF_GLOBAL_UCHAR);
+                            params.globalalpha.size8 = alpha;
+                        } else {
+                            params.flags = BVFLAG_ROP;
+                            params.op.rop = 0xCCCC;
+                        }
+                        srcgeom.format = OCDFMT_RGBA24;
+                        dstgeom.format = OCDFMT_RGBA24;
+                        break;
+
+                    case 2://BLEND -dst RGB1|src RGBA
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER);
+                        srcgeom.format = OCDFMT_RGBA24;
+                        dstgeom.format = OCDFMT_RGB124;
+                        break;
+
+                    case 3://BLEND -dst RGBA|src RGBA
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER);
+                        srcgeom.format = OCDFMT_RGBA24;
+                        dstgeom.format = OCDFMT_RGBA24;
+                        break;
+
+                    case 4: //BLEND -dst RGB1|src RGBx  + global alpha
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                        params.globalalpha.size8 = alpha;
+                        srcgeom.format = OCDFMT_RGB124;
+                        dstgeom.format = OCDFMT_RGB124;
+                        break;
+
+                    case 5://BLEND -dst RGBA|src RGBx  + global alpha
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                        params.globalalpha.size8 = alpha;
+                        srcgeom.format = OCDFMT_RGB124;
+                        dstgeom.format = OCDFMT_RGBA24;
+                        break;
+
+                    case 6://BLEND -dst RGB1|src RGBA  + global alpha
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                        params.globalalpha.size8 = alpha;
+                        srcgeom.format = OCDFMT_RGBA24;
+                        dstgeom.format = OCDFMT_RGB124;
+                        break;
+
+                    case 7://BLEND -dst RGBA|src RGBA  + global alpha
+                        params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                        params.globalalpha.size8 = alpha;
+                        srcgeom.format = OCDFMT_RGBA24;
+                        dstgeom.format = OCDFMT_RGBA24;
+                        break;
+                    }
+
+                    break;
+
+                default:
+                    goto SKIA;
+                    break;
+            }
+
+            bverr = bv_blt(&params);
+        }
+
+SKIA:
+        if(bverr != BVERR_NONE) {
+#endif
         SK_RESTRICT uint32_t* dst = fDevice->getAddr32(x, y);
         const SK_RESTRICT uint32_t* src = fSource->getAddr32(x - fLeft,
                                                              y - fTop);
@@ -57,6 +251,9 @@ public:
             dst = (SK_RESTRICT uint32_t*)((char*)dst + dstRB);
             src = (const SK_RESTRICT uint32_t*)((const char*)src + srcRB);
         } while (--height != 0);
+#ifdef BLTSVILLE_ENHANCEMENT
+        }
+#endif
     }
 
 private:
@@ -269,6 +466,96 @@ public:
     }
 };
 
+#ifdef BLTSVILLE_ENHANCEMENT
+class Sprite_D32_S16_Opaque : public SkSpriteBlitter {
+public:
+    Sprite_D32_S16_Opaque(const SkBitmap& source)
+        : SkSpriteBlitter(source) {}
+
+    // overrides
+    virtual void blitRect(int x, int y, int width, int height) {
+        enum bverror bverr = BVERR_UNK;
+
+        if (hbvlib && (width > 1) && (height > 1)) {
+            struct bvbltparams params;
+            struct bvbuffdesc srcdesc, dstdesc;
+            struct bvsurfgeom srcgeom, dstgeom;
+
+            memset(&params, 0, sizeof(params));
+            params.structsize = sizeof(params);
+            params.src1.desc = &srcdesc;
+            params.src1geom = &srcgeom;
+
+            params.dstdesc = &dstdesc;
+            params.dstgeom = &dstgeom;
+
+            memset(&srcgeom, 0, sizeof(srcgeom));
+            srcgeom.structsize = sizeof(srcgeom);
+            srcgeom.format = OCDFMT_RGB16;
+
+            memset(&srcdesc, 0, sizeof(srcdesc));
+            srcdesc.structsize = sizeof(srcdesc);
+
+            memset(&dstgeom, 0, sizeof(dstgeom));
+            dstgeom.structsize = sizeof(dstgeom);
+            dstgeom.format = OCDFMT_RGB124;
+
+            memset(&dstdesc, 0, sizeof(dstdesc));
+            dstdesc.structsize = sizeof(dstdesc);
+
+            params.flags = BVFLAG_ROP;
+            params.op.rop = 0xCCCC;
+
+            params.src1rect.left = x - fLeft;
+            params.src1rect.top = y - fTop;
+            params.src1rect.width = width;
+            params.src1rect.height = height;
+
+            params.dstrect.left = x;
+            params.dstrect.top = y;
+            params.dstrect.width = width;
+            params.dstrect.height = height;
+
+            dstgeom.width = fDevice->width();
+            dstgeom.height = fDevice->height();
+            dstgeom.virtstride = fDevice->rowBytes();
+
+            srcgeom.width = fSource->width();
+            srcgeom.height = fSource->height();
+            srcgeom.virtstride = fSource->rowBytes();
+
+            srcdesc.virtaddr = fSource->getPixels();
+            srcdesc.length = srcgeom.virtstride * srcgeom.height;
+
+            dstdesc.virtaddr = fDevice->getPixels();
+            dstdesc.length = dstgeom.virtstride * dstgeom.height;
+
+            if(srcdesc.virtaddr == 0 || dstdesc.virtaddr == 0) {
+                goto SKIA_D32_S16;
+            }
+
+            bverr = bv_blt(&params);
+        }
+SKIA_D32_S16:
+        if(bverr != BVERR_NONE) {
+            SK_RESTRICT uint32_t* dst = fDevice->getAddr32(x, y);
+            const SK_RESTRICT uint16_t* src = fSource->getAddr16(x - fLeft, y - fTop);
+            unsigned dstRB = fDevice->rowBytes();
+            unsigned srcRB = fSource->rowBytes();
+            int i;
+
+            while (--height >= 0) {
+                for ( i = 0; i < width; i++ ) {
+                    dst[i] = SkPixel16ToPixel32(src[i]);
+                }
+                dst = (uint32_t*)((char*)dst + dstRB);
+                src = (const uint16_t*)((const char*)src + srcRB);
+            }
+        }
+    }
+};
+#endif
+
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "SkTemplatesPriv.h"
@@ -314,6 +601,14 @@ SkSpriteBlitter* SkSpriteBlitter::ChooseD32(const SkBitmap& source,
                               storage, storageSize, (source, alpha));
             }
             break;
+#ifdef BLTSVILLE_ENHANCEMENT
+        case SkBitmap::kRGB_565_Config:
+            if (hbvlib && (255 == alpha)) {
+                SK_PLACEMENT_NEW_ARGS(blitter, Sprite_D32_S16_Opaque,
+                                      storage, storageSize, (source));
+            }
+            break;
+#endif
         default:
             break;
     }

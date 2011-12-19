@@ -36,6 +36,16 @@
 #include "SkBitmapProcShader.h"
 #include "SkDrawProcs.h"
 
+#ifdef BLTSVILLE_ENHANCEMENT
+#include <bltsville.h>
+#include "SkXfermode.h"
+
+extern void* hbvlib;
+extern BVFN_MAP bv_map;
+extern BVFN_BLT bv_blt;
+extern BVFN_UNMAP bv_unmap;
+#endif
+
 //#define TRACE_BITMAP_DRAWS
 
 #define kBlitterStorageLongCount    (sizeof(SkBitmapProcShader) >> 2)
@@ -749,8 +759,9 @@ void SkDraw::drawRect(const SkRect& rect, const SkPaint& paint) const {
             // extra space for hairlines
             ir.inset(-1, -1);
         }
-        if (fClip->quickReject(ir))
+        if (fClip->quickReject(ir)) {
             return;
+        }
     }
 
     SkAutoBlitterChoose blitterStorage(*fBitmap, matrix, paint);
@@ -1087,6 +1098,10 @@ static bool clipped_out(const SkMatrix& matrix, const SkRegion& clip,
 
 void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
                         const SkPaint& origPaint) const {
+#ifdef BLTSVILLE_ENHANCEMENT
+    enum bverror bverr = BVERR_UNK;
+#endif
+
     SkDEBUGCODE(this->validate();)
 
     // nothing to draw
@@ -1112,6 +1127,25 @@ void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
         return;
     }
 
+#ifdef BLTSVILLE_ENHANCEMENT
+    int cLeft = 0;
+    int cTop = 0;
+    int cWidth = 0;
+    int cHeight = 0;
+
+    bool supportedClip = true;
+    if(!fClip->isEmpty()) {
+        if(fClip->isComplex()) {
+            supportedClip = false;
+        }
+        SkIRect    ir = fClip->getBounds();
+        cLeft = ir.fLeft;
+        cTop  = ir.fTop;
+        cWidth = ir.fRight - cLeft;
+        cHeight = ir.fBottom - cTop;
+    }
+#endif
+
     if (clipped_out(matrix, *fClip, bitmap.width(), bitmap.height())) {
         return;
     }
@@ -1132,6 +1166,10 @@ void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
     if (!bitmap.readyToDraw()) {
         return;
     }
+
+#ifdef BLTSVILLE_ENHANCEMENT
+    const SkBitmap * pDev = fBitmap; //src = bitmap, dst = pDev
+#endif
 
     if (bitmap.getConfig() != SkBitmap::kA8_Config &&
             just_translate(matrix, bitmap)) {
@@ -1172,11 +1210,392 @@ void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
     } else {
         SkAutoBitmapShaderInstall install(bitmap, paint);
 
+#ifdef BLTSVILLE_ENHANCEMENT
+        bool scaleOrTranslate = false;
+        bool supportedSrcFormat = false;
+        bool supportedDstFormat = false;
+        bool supportedPaint = false;
+        bool flip = false;
+        //Scale or translation only
+        //        2D matrix
+        //        scaleX    skewY     persp0
+        //        skewX     scaleY    persp1
+        //        transX    transY    persp2
+        if(matrix[SkMatrix::kMSkewX] == 0 && matrix[SkMatrix::kMSkewY] == 0 &&
+            matrix[SkMatrix::kMPersp0]== 0 && matrix[SkMatrix::kMPersp1]== 0 &&
+            matrix[SkMatrix::kMPersp2]== 1) {
+            scaleOrTranslate = true;
+        }
+
+        //Checking for horizontal or vertical flip
+        if(matrix[SkMatrix::kMScaleX] <= 0 || matrix[SkMatrix::kMScaleY] <= 0) {
+          flip = true;
+        }
+
+        if(bitmap.getConfig() == SkBitmap::kARGB_8888_Config ||
+           bitmap.getConfig() == SkBitmap::kRGB_565_Config) {
+            supportedSrcFormat = true;
+        }
+
+        if(pDev->getConfig() == SkBitmap::kARGB_8888_Config ||
+           pDev->getConfig() == SkBitmap::kRGB_565_Config) {
+            supportedDstFormat = true;
+        }
+
+        if(paint.getStyle() == SkPaint::kFill_Style &&
+            paint.getStrokeJoin() == SkPaint::kMiter_Join) {
+            supportedPaint = true;
+            if(paint.isAntiAlias()) {
+                supportedPaint = false;
+            }
+        }
+
+        int width = SkIntToScalar(bitmap.width());
+        int height = SkIntToScalar(bitmap.height());
+        SkRect rect;
+        rect.set(0, 0, width, height);
+        SkRect devRect;
+
+        matrix.mapXY(rect.fLeft, rect.fTop, rect_points(devRect, 0));
+        matrix.mapXY(rect.fRight, rect.fBottom, rect_points(devRect, 1));
+        devRect.sort();
+
+        SkBitmap::Config dstConfig = pDev->getConfig();
+        SkBitmap::Config srcConfig = bitmap.getConfig();
+
+        int operation = 0;
+        int alpha = paint.getAlpha();
+
+
+        unsigned int gAlpha = 0;
+
+        bool dstOpaque = pDev->isOpaque();
+        bool srcOpaque = bitmap.isOpaque();
+
+
+        if(hbvlib && scaleOrTranslate && supportedSrcFormat && supportedDstFormat
+           && supportedPaint && supportedClip && !flip) {
+
+            struct bvbltparams params;
+            struct bvbuffdesc srcdesc, dstdesc;
+            struct bvsurfgeom srcgeom, dstgeom;
+
+            memset(&params, 0, sizeof(params));
+            params.structsize = sizeof(params);
+            params.src1.desc = &srcdesc;
+            params.src1geom = &srcgeom;
+
+            params.src2.desc = &dstdesc;
+            params.src2geom = &dstgeom;
+
+            params.dstdesc = &dstdesc;
+            params.dstgeom = &dstgeom;
+
+            memset(&srcgeom, 0, sizeof(srcgeom));
+            srcgeom.structsize = sizeof(srcgeom);
+
+            memset(&srcdesc, 0, sizeof(srcdesc));
+            srcdesc.structsize = sizeof(srcdesc);
+
+            memset(&dstgeom, 0, sizeof(dstgeom));
+            dstgeom.structsize = sizeof(dstgeom);
+
+            memset(&dstdesc, 0, sizeof(dstdesc));
+            dstdesc.structsize = sizeof(dstdesc);
+
+            params.src1rect.left = 0;
+            params.src1rect.top = 0;
+            params.src1rect.width = width;
+            params.src1rect.height = height;
+
+            params.src2rect.left = SkScalarRound(devRect.fLeft);
+            params.src2rect.top = SkScalarRound(devRect.fTop);
+            params.src2rect.width = SkScalarRound(devRect.fRight) - params.src2rect.left;
+            params.src2rect.height = SkScalarRound(devRect.fBottom) - params.src2rect.top ;
+
+            params.dstrect = params.src2rect;
+
+            params.cliprect.left = cLeft;
+            params.cliprect.top = cTop;
+            params.cliprect.width = cWidth;
+            params.cliprect.height = cHeight;
+
+            srcgeom.structsize = sizeof(srcgeom);
+            srcgeom.width = bitmap.width();
+            srcgeom.height = bitmap.height();
+            srcgeom.virtstride = bitmap.rowBytes();
+
+            srcdesc.structsize = sizeof(srcdesc);
+            srcdesc.virtaddr = bitmap.getPixels();
+            srcdesc.length = srcgeom.virtstride * srcgeom.height;
+
+            dstgeom.structsize = sizeof(dstgeom);
+            dstgeom.width = pDev->width();
+            dstgeom.height = pDev->height();
+            dstgeom.virtstride = pDev->rowBytes();
+
+            dstdesc.structsize = sizeof(dstdesc);
+            dstdesc.virtaddr = pDev->getPixels();
+            dstdesc.length = dstgeom.virtstride * dstgeom.height;
+
+            params.structsize = sizeof(params);
+
+            if(srcdesc.virtaddr == 0 || dstdesc.virtaddr == 0) {
+                goto SKIA;
+            }
+
+            if(paint.getFlags() & SkPaint::kFilterBitmap_Flag) {
+                params.scalemode = BVSCALE_FASTEST_NOT_NEAREST_NEIGHBOR;
+            } else {
+                params.scalemode = BVSCALE_FASTEST;
+            }
+
+            if(pDev->getConfig() == SkBitmap::kRGB_565_Config && paint.isDither()) {
+                params.dithermode = BVDITHER_FASTEST_ON;
+            } else {
+                params.dithermode = BVDITHER_NONE;
+            }
+
+
+            SkXfermode* xfer = paint.getXfermode();
+            SkXfermode::Mode mode;
+            bool getMode = SkXfermode::IsMode(xfer, &mode);
+
+            if (SkXfermode::kSrcOver_Mode == mode) {
+                if (0 == alpha) {
+                    mode = SkXfermode::kDst_Mode;
+                } else if (0xFF == alpha && srcOpaque) {
+                    mode = SkXfermode::kSrc_Mode;
+                }
+            }
+
+            switch(mode) {
+
+            case SkXfermode::kSrc_Mode:
+                if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                    srcgeom.format = OCDFMT_RGBA24;
+                    if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                        dstgeom.format = OCDFMT_RGBA24;
+                    } else {
+                        dstgeom.format = OCDFMT_RGB16;
+                    }
+                } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                    srcgeom.format = OCDFMT_RGB16;
+                    if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                        dstgeom.format = OCDFMT_RGB124;
+                    } else {
+                        dstgeom.format = OCDFMT_RGB16;
+                    }
+                }
+                if(alpha != 255) {
+                    if(fClip->isEmpty()) {
+                        params.flags = BVFLAG_BLEND;
+                    } else {
+                        params.flags = BVFLAG_BLEND | BVFLAG_CLIP;
+                    }
+                    params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1 + BVBLENDDEF_GLOBAL_UCHAR);
+                    params.globalalpha.size8 = alpha;
+                } else {
+                     if(fClip->isEmpty()) {
+                         params.flags = BVFLAG_ROP;
+                     } else {
+                         params.flags = BVFLAG_ROP | BVFLAG_CLIP;
+                     }
+
+                     params.op.rop = 0xCCCC;
+                 }
+                 break;
+
+             case SkXfermode::kSrcOver_Mode:
+
+                 if(fClip->isEmpty()) {
+                     params.flags = BVFLAG_BLEND;
+                 } else {
+                     params.flags = BVFLAG_BLEND | BVFLAG_CLIP;
+                 }
+
+                 if(alpha == 255 && srcOpaque) {
+                     operation = 1; //ROP 0xCCCC -dst RGB1|src RGBx
+                 } else if(alpha == 255 && dstOpaque) {
+                     operation = 2; //BLEND -dst RGB1|src RGBA
+                 } else if(alpha == 255) {
+                     operation = 3; //BLEND -dst RGBA|src RGBA
+                 } else if(srcOpaque && dstOpaque) {
+                     operation = 4; //BLEND -dst RGB1|src RGBx  + global alpha
+                 } else if(srcOpaque) {
+                     operation = 5; //BLEND -dst RGBA|src RGBx  + global alpha
+                 } else if(dstOpaque) {
+                     operation = 6; //BLEND -dst RGB1|src RGBA  + global alpha
+                 } else {
+                     operation = 7; //BLEND -dst RGBA|src RGBA  + global alpha
+                 }
+
+                 switch(operation) {
+
+                 case 1://ROP 0xCCCC -dst RGB1|src RGBx
+
+                     if(fClip->isEmpty()) {
+                         params.flags = BVFLAG_ROP;
+                     } else {
+                         params.flags = BVFLAG_ROP | BVFLAG_CLIP;
+                     }
+                     params.op.rop = 0xCCCC;
+
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBx24;
+                     } else {
+                         srcgeom.format = OCDFMT_RGB16;
+                     }
+
+                     if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                         dstgeom.format = OCDFMT_RGB124;
+                     } else {
+                         if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                             srcgeom.format = OCDFMT_RGBx24;
+                         }
+                         dstgeom.format = OCDFMT_RGB16;
+                     }
+                     break;
+
+                 case 2://BLEND -dst RGB1|src RGBA
+                     params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER);
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBA24;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                         srcgeom.format = OCDFMT_RGB16;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     }
+                     break;
+
+                 case 3://BLEND -dst RGBA|src RGBA
+                     params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER);
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBA24;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGBA24;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                         srcgeom.format = OCDFMT_RGB16;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     }
+
+                     break;
+
+                 case 4: //BLEND -dst RGB1|src RGBx  + global alpha
+                     params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                     params.globalalpha.size8 = alpha;
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBx24;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                         srcgeom.format = OCDFMT_RGB16;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     }
+                     break;
+
+                 case 5://BLEND -dst RGBA|src RGBx  + global alpha
+                     params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                     params.globalalpha.size8 = alpha;
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBx24;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGBA24;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                         srcgeom.format = OCDFMT_RGB16;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGBA24;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     }
+                     break;
+
+                 case 6://BLEND -dst RGB1|src RGBA  + global alpha
+                     params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                     params.globalalpha.size8 = alpha;
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBA24;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                         srcgeom.format = OCDFMT_RGB16;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGB124;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     }
+                     break;
+
+                 case 7://BLEND -dst RGBA|src RGBA  + global alpha
+                     params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+                     params.globalalpha.size8 = alpha;
+                     if(srcConfig == SkBitmap::kARGB_8888_Config) {
+                         srcgeom.format = OCDFMT_RGBA24;
+                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                             dstgeom.format = OCDFMT_RGBA24;
+                         } else {
+                             dstgeom.format = OCDFMT_RGB16;
+                         }
+                     } else if(srcConfig == SkBitmap::kRGB_565_Config) {
+                        srcgeom.format = OCDFMT_RGB16;
+                        if(dstConfig == SkBitmap::kARGB_8888_Config) {
+                            dstgeom.format = OCDFMT_RGB124;
+                        } else {
+                            dstgeom.format = OCDFMT_RGB16;
+                        }
+                    }
+                    break;
+
+                }
+                break;
+
+            default:
+                goto SKIA;
+                break;
+            }
+            bverr = bv_blt(&params);
+        }
+    SKIA:
+        if (bverr != BVERR_NONE) {
+#endif
         SkRect  r;
         r.set(0, 0, SkIntToScalar(bitmap.width()),
               SkIntToScalar(bitmap.height()));
         // is this ok if paint has a rasterizer?
         draw.drawRect(r, install.paintWithShader());
+#ifdef BLTSVILLE_ENHANCEMENT
+        }
+#endif
     }
 }
 
