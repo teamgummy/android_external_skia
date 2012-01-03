@@ -24,6 +24,14 @@
 #include "SkUtils.h"
 #include "SkXfermode.h"
 
+#ifdef BLTSVILLE_ENHANCEMENT
+#include <bltsville.h>
+extern void* hbvlib;
+extern BVFN_MAP bv_map;
+extern BVFN_BLT bv_blt;
+extern BVFN_UNMAP bv_unmap;
+#endif
+
 #if defined(__ARM_HAVE_NEON) && defined(SK_CPU_LENDIAN)
     #define SK_USE_NEON
     #include <arm_neon.h>
@@ -678,6 +686,92 @@ void SkRGB16_Blitter::blitV(int x, int y, int height, SkAlpha alpha) {
 }
 
 void SkRGB16_Blitter::blitRect(int x, int y, int width, int height) {
+#ifdef BLTSVILLE_ENHANCEMENT
+    enum bverror bverr = BVERR_UNK;
+
+    if(hbvlib) {
+        struct bvbltparams params;
+        struct bvbuffdesc srcdesc, dstdesc;
+        struct bvsurfgeom srcgeom, dstgeom;
+
+        uint16_t src16 = SkPixel32ToPixel16(fSrcColor32);
+        int alpha = SkGetPackedA32(fSrcColor32);
+        int operation = 0;
+
+        memset(&params, 0, sizeof(params));
+        params.structsize = sizeof(params);
+
+        params.src1.desc = &srcdesc;
+        params.src1geom = &srcgeom;
+
+        params.src2.desc = &dstdesc;
+        params.src2geom = &dstgeom;
+
+        params.dstdesc = &dstdesc;
+        params.dstgeom = &dstgeom;
+
+        memset(&srcgeom, 0, sizeof(srcgeom));
+        srcgeom.structsize = sizeof(srcgeom);
+
+        memset(&srcdesc, 0, sizeof(srcdesc));
+        srcdesc.structsize = sizeof(srcdesc);
+
+        memset(&dstgeom, 0, sizeof(dstgeom));
+        dstgeom.structsize = sizeof(dstgeom);
+
+        memset(&dstdesc, 0, sizeof(dstdesc));
+        dstdesc.structsize = sizeof(dstdesc);
+
+        params.src1rect.width = 1;
+        params.src1rect.height = 1;
+
+        params.src2rect.left = x;
+        params.src2rect.top = y;
+        params.src2rect.width = width;
+        params.src2rect.height = height;
+
+        params.dstrect.left = x;
+        params.dstrect.top = y;
+        params.dstrect.width = width;
+        params.dstrect.height = height;
+
+        dstgeom.width = fDevice.width();
+        dstgeom.height = fDevice.height();
+        dstgeom.virtstride = fDevice.rowBytes();
+
+        srcgeom.width = 1;
+        srcgeom.height = 1;
+        srcgeom.virtstride = srcgeom.width * sizeof(src16);
+
+        srcdesc.virtaddr = &src16;
+        srcdesc.length = srcgeom.virtstride * srcgeom.height;
+
+        dstdesc.virtaddr = fDevice.getAddr16(0, 0);
+        dstdesc.length = dstgeom.virtstride * dstgeom.height;
+
+        srcgeom.format = OCDFMT_RGB16;
+        dstgeom.format = OCDFMT_RGB16;
+
+        if(srcdesc.virtaddr == 0 || dstdesc.virtaddr == 0) {
+            goto SKIA_RGB16;
+        }
+
+        if (alpha == 255) {
+            params.flags = BVFLAG_ROP;
+            params.op.rop = 0xCCCC;
+        } else {
+            params.flags = BVFLAG_BLEND;
+            params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+            params.globalalpha.size8 = alpha;
+        }
+
+        bverr = bv_blt(&params);
+
+    }
+
+SKIA_RGB16:
+    if(bverr != BVERR_NONE) {
+#endif
     SkASSERT(x + width <= fDevice.width() && y + height <= fDevice.height());
     uint16_t* SK_RESTRICT device = fDevice.getAddr16(x, y);
     unsigned    deviceRB = fDevice.rowBytes();
@@ -687,6 +781,9 @@ void SkRGB16_Blitter::blitRect(int x, int y, int width, int height) {
         blend32_16_row(src32, device, width);
         device = (uint16_t*)((char*)device + deviceRB);
     }
+#ifdef BLTSVILLE_ENHANCEMENT
+    }
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -21,6 +21,14 @@
 #include "SkUtils.h"
 #include "SkXfermode.h"
 
+#ifdef BLTSVILLE_ENHANCEMENT
+#include <bltsville.h>
+extern void* hbvlib;
+extern BVFN_MAP bv_map;
+extern BVFN_BLT bv_blt;
+extern BVFN_UNMAP bv_unmap;
+#endif
+
 #if defined(SK_SUPPORT_LCDTEXT)
 namespace skia_blitter_support {
 // subpixel helper functions from SkBlitter_ARGB32_Subpixel.cpp
@@ -368,6 +376,89 @@ void SkARGB32_Blitter::blitRect(int x, int y, int width, int height) {
         return;
     }
 
+#ifdef BLTSVILLE_ENHANCEMENT
+    enum bverror bverr = BVERR_UNK;
+
+    if(hbvlib) {
+        struct bvbltparams params;
+        struct bvbuffdesc srcdesc, dstdesc;
+        struct bvsurfgeom srcgeom, dstgeom;
+
+        uint32_t src32 = fPMColor;
+        int alpha = SkGetPackedA32(fPMColor);
+        int operation = 0;
+
+        memset(&params, 0, sizeof(params));
+        params.structsize = sizeof(params);
+
+        params.src1.desc = &srcdesc;
+        params.src1geom = &srcgeom;
+
+        params.src2.desc = &dstdesc;
+        params.src2geom = &dstgeom;
+
+        params.dstdesc = &dstdesc;
+        params.dstgeom = &dstgeom;
+
+        memset(&srcgeom, 0, sizeof(srcgeom));
+        srcgeom.structsize = sizeof(srcgeom);
+
+        memset(&srcdesc, 0, sizeof(srcdesc));
+        srcdesc.structsize = sizeof(srcdesc);
+
+        memset(&dstgeom, 0, sizeof(dstgeom));
+        dstgeom.structsize = sizeof(dstgeom);
+
+        memset(&dstdesc, 0, sizeof(dstdesc));
+        dstdesc.structsize = sizeof(dstdesc);
+
+        params.src1rect.width = 1;
+        params.src1rect.height = 1;
+
+        params.src2rect.left = x;
+        params.src2rect.top = y;
+        params.src2rect.width = width;
+        params.src2rect.height = height;
+
+        params.dstrect.left = x;
+        params.dstrect.top = y;
+        params.dstrect.width = width;
+        params.dstrect.height = height;
+
+        dstgeom.width = fDevice.width();
+        dstgeom.height = fDevice.height();
+        dstgeom.virtstride = fDevice.rowBytes();
+
+        srcgeom.width = 1;
+        srcgeom.height = 1;
+        srcgeom.virtstride = srcgeom.width * sizeof(src32);
+
+        srcdesc.virtaddr = &src32;
+        srcdesc.length = srcgeom.virtstride * srcgeom.height;
+
+        dstdesc.virtaddr = fDevice.getAddr32(0, 0);
+        dstdesc.length = dstgeom.virtstride * dstgeom.height;
+
+        srcgeom.format = OCDFMT_RGBA24;
+        dstgeom.format = OCDFMT_RGBA24;
+
+        if(srcdesc.virtaddr == 0 || dstdesc.virtaddr == 0) {
+            goto SKIA_ARGB32;
+        }
+
+        if(alpha == 255) {
+            params.flags = BVFLAG_ROP;
+            params.op.rop = 0xCCCC;
+        } else {
+            params.flags = BVFLAG_BLEND;
+            params.op.blend = (enum bvblend)((unsigned int)BVBLEND_SRC1OVER + BVBLENDDEF_GLOBAL_UCHAR);
+            params.globalalpha.size8 = alpha;
+        }
+        bverr = bv_blt(&params);
+    }
+SKIA_ARGB32:
+    if(bverr != BVERR_NONE) {
+#endif
     uint32_t*   device = fDevice.getAddr32(x, y);
     uint32_t    color = fPMColor;
     size_t      rowBytes = fDevice.rowBytes();
@@ -376,6 +467,9 @@ void SkARGB32_Blitter::blitRect(int x, int y, int width, int height) {
         fColor32Proc(device, device, width, color);
         device = (uint32_t*)((char*)device + rowBytes);
     }
+#ifdef BLTSVILLE_ENHANCEMENT
+        }
+#endif
 }
 
 #if defined _WIN32 && _MSC_VER >= 1300
