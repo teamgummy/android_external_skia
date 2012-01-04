@@ -144,6 +144,14 @@ public:
                 }
             }
 
+            if (fPaint->getColorFilter() != NULL ||
+                fPaint->getTypeface() != NULL ||
+                fPaint->getShader() != NULL ||
+                fPaint->getMaskFilter() != NULL ||
+                fPaint->getLooper() != NULL) {
+                goto SKIA_D16_S16;
+            }
+
             switch(mode) {
 
                 case SkXfermode::kSrc_Mode:
@@ -496,6 +504,14 @@ public:
                 params.dithermode = BVDITHER_FASTEST_ON;
             } else {
                 params.dithermode = BVDITHER_NONE;
+            }
+
+            if (fPaint->getColorFilter() != NULL ||
+                fPaint->getTypeface() != NULL ||
+                fPaint->getShader() != NULL ||
+                fPaint->getMaskFilter() != NULL ||
+                fPaint->getLooper() != NULL) {
+                goto SKIA_D16_S32;
             }
 
             SkXfermode* xfer = fPaint->getXfermode();

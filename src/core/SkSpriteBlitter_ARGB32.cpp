@@ -131,6 +131,14 @@ public:
                 }
             }
 
+            if (fPaint->getColorFilter() != NULL ||
+                fPaint->getTypeface() != NULL ||
+                fPaint->getShader() != NULL ||
+                fPaint->getMaskFilter() != NULL ||
+                fPaint->getLooper() != NULL) {
+                goto SKIA;
+            }
+
             switch(mode) {
 
                 case SkXfermode::kSrc_Mode:

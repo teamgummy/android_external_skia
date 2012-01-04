@@ -1272,6 +1272,13 @@ void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
         bool dstOpaque = pDev->isOpaque();
         bool srcOpaque = bitmap.isOpaque();
 
+        if (paint.getColorFilter() != NULL ||
+            paint.getTypeface() != NULL ||
+            paint.getShader() != NULL ||
+            paint.getMaskFilter() != NULL ||
+            paint.getLooper() != NULL) {
+            goto SKIA;
+        }
 
         if(hbvlib && scaleOrTranslate && supportedSrcFormat && supportedDstFormat
            && supportedPaint && supportedClip && !flip) {
@@ -1569,7 +1576,7 @@ void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
                      } else if(srcConfig == SkBitmap::kRGB_565_Config) {
                         srcgeom.format = OCDFMT_RGB16;
                         if(dstConfig == SkBitmap::kARGB_8888_Config) {
-                            dstgeom.format = OCDFMT_RGB124;
+                            dstgeom.format = OCDFMT_RGBA24;
                         } else {
                             dstgeom.format = OCDFMT_RGB16;
                         }
