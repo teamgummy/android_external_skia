@@ -23,6 +23,8 @@ ifeq ($(ARCH_ARM_HAVE_NEON),true)
 	LOCAL_CFLAGS += -D__ARM_HAVE_NEON
 endif
 
+LOCAL_CFLAGS += -ffast-math
+
 LOCAL_SRC_FILES:= \
 	src/core/Sk64.cpp \
 	src/core/SkBuffer.cpp \
